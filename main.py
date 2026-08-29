@@ -4,14 +4,13 @@ import time
 from datetime import datetime
 import websockets
 from telegram import Bot
-import aiohttp
 
 # ==================== НАЛАШТУВАННЯ ====================
 TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
-PUMP_THRESHOLD = 2.0      # % зміни для сигналу
+PUMP_THRESHOLD = 1.0      # ЗМІНЕНО: 1% замість 2%
 TIME_WINDOW = 30           # секунд для аналізу
-MIN_PRICE = 0.001          # мінімальна ціна
+MIN_PRICE = 0.001
 # =====================================================
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -32,7 +31,7 @@ async def send_alert(symbol, change, price, alert_type):
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
         print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}%")
     except Exception as e:
-        print(f"[✗] Помилка: {e}")
+        print(f"[✗] Помилка відправки: {e}")
 
 async def process_price(symbol, price):
     global prices, alerted
@@ -71,46 +70,42 @@ async def main():
     print(f"📊 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с")
     print("=" * 50)
     
-    # Отримуємо ВСІ ф'ючерсні монети USDT з Bybit
-    print("📡 Завантаження списку монет Bybit...")
-    async with aiohttp.ClientSession() as session:
-        async with session.get("https://api.bybit.com/v5/market/tickers?category=linear") as resp:
-            data = await resp.json()
-            if data['retCode'] == 0:
-                all_symbols = [item['symbol'] for item in data['result']['list'] if item['symbol'].endswith('USDT')]
-    
-    print(f"✅ Завантажено {len(all_symbols)} ф'ючерсних монет USDT")
-    
+    # Тестове повідомлення
     try:
         await bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text=f"✅ *Бот запущено!*\n📊 Моніторинг {len(all_symbols)} монет (Bybit)\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с",
+            text=f"✅ *Бот запущено!*\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с",
             parse_mode="Markdown"
         )
         print("✅ Тестове повідомлення надіслано!")
     except Exception as e:
         print(f"⚠️ Помилка відправки: {e}")
     
-    # Підключаємося до WebSocket Bybit для ВСІХ монет через один потік
-    # Bybit дозволяє підписуватися на багато символів, розділяючи їх крапкою.
-    # Наприклад: "tickers.BTCUSDT.ETHUSDT.XRPUSDT"
-    # Але якщо символів забагато, краще підписуватися на всі через "tickers" без символу
-    # або через масив символів. Використаємо підписку на всі через "tickers"
+    # Отримуємо початкові ціни
+    print("📡 Отримую початкові ціни...")
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        async with session.get("https://api.bybit.com/v5/market/tickers?category=linear") as resp:
+            data = await resp.json()
+            if data['retCode'] == 0:
+                for item in data['result']['list']:
+                    symbol = item['symbol']
+                    price = float(item['lastPrice'])
+                    if symbol.endswith('USDT') and price > MIN_PRICE:
+                        prices[symbol] = [(time.time(), price)]
+                print(f"✅ Завантажено {len(prices)} монет")
     
+    # Bybit WebSocket
     uri = "wss://stream.bybit.com/v5/public/linear"
-    subscription_msg = {
-        "op": "subscribe",
-        "args": ["tickers"]
-    }
+    subscription_msg = {"op": "subscribe", "args": ["tickers"]}
     
-    print(f"🔄 Підключення до Bybit WebSocket...")
+    print("🔄 Підключення до Bybit WebSocket...")
     
     while True:
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
                 await ws.send(json.dumps(subscription_msg))
-                print(f"✅ Підключено до Bybit! Отримую дані з {len(all_symbols)} монет...")
-                print("⏳ Очікую на зміни цін...")
+                print("✅ Підключено до Bybit! Очікую сигнали...")
                 
                 while True:
                     try:
@@ -121,7 +116,7 @@ async def main():
                                 price = float(data['lastPrice'])
                                 await process_price(symbol, price)
                     except websockets.exceptions.ConnectionClosed:
-                        print("⚠️ З'єднання втрачено, перепідключення...")
+                        print("⚠️ Перепідключення...")
                         break
         except Exception as e:
             print(f"❌ Помилка: {e}")
