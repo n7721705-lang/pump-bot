@@ -1,6 +1,6 @@
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telegram import Bot
 import aiohttp
 
@@ -13,19 +13,32 @@ CHECK_INTERVAL = 10        # перевірка кожні 10 секунд
 MIN_PRICE = 0.001
 # =====================================================
 
+# Часовий пояс Київ (UTC+2 / UTC+3)
+KYIV_TZ = timezone(timedelta(hours=3))
+
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 prices = {}
 alerted = set()
 all_symbols = []
 
+def get_kyiv_time():
+    """Повертає поточний час у Києві"""
+    return datetime.now(KYIV_TZ).strftime('%H:%M:%S')
+
 async def send_alert(symbol, change, price, alert_type):
-    emoji = "🚀" if alert_type == "PUMP" else "💀"
+    if alert_type == "PUMP":
+        emoji = "🟢"
+        title = "PUMP"
+    else:
+        emoji = "🔴"
+        title = "DUMP"
+    
     message = (
-        f"{emoji} *{alert_type} DETECTED!*\n"
+        f"{emoji} *{title}*\n"
         f"📊 *Монета:* `{symbol}`\n"
         f"📈 *Зміна:* {change:.2f}%\n"
         f"💰 *Ціна:* {price} USDT\n"
-        f"🕐 *Час:* {datetime.now().strftime('%H:%M:%S')}"
+        f"🕐 *Час:* {get_kyiv_time()}"
     )
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
@@ -87,7 +100,6 @@ async def check_pumps():
         all_symbols = [item['symbol'] for item in tickers if item['symbol'].endswith('USDT')]
         print(f"📊 ВСЬОГО МОНЕТ: {len(all_symbols)}")
     
-    new_prices = {}
     checked = 0
     
     for item in tickers:
@@ -100,7 +112,6 @@ async def check_pumps():
             continue
             
         checked += 1
-        new_prices[symbol] = price
         
         # Ініціалізуємо історію для нових монет
         if symbol not in prices:
@@ -128,7 +139,9 @@ async def check_pumps():
                         print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}% (ціна: {last_price})")
                         await send_alert(symbol, change, last_price, "PUMP" if change > 0 else "DUMP")
     
-    print(f"✅ Перевірено {checked} монет з {len(all_symbols)}")
+    # Логуємо кожні 10 перевірок
+    if int(current_time / 10) % 10 == 0:
+        print(f"✅ Перевірено {checked} монет з {len(all_symbols)} | Час: {get_kyiv_time()}")
 
 async def main():
     global all_symbols
@@ -138,6 +151,7 @@ async def main():
     print("=" * 50)
     print(f"📊 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с")
     print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
+    print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
     # Отримуємо список всіх монет
@@ -149,7 +163,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text=f"✅ *Бот запущено!*\n📊 Моніторинг {len(all_symbols)} монет\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с",
+            text=f"✅ *Бот запущено!*\n📊 Моніторинг {len(all_symbols)} монет\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с\n🕐 Київ: {get_kyiv_time()}",
             parse_mode="Markdown"
         )
         print("✅ Тестове повідомлення надіслано!")
