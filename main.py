@@ -7,7 +7,7 @@ import aiohttp
 # ==================== НАЛАШТУВАННЯ ====================
 TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
-PUMP_THRESHOLD = 1.0      # 1% зміни
+PUMP_THRESHOLD = 2.0      # 2% зміни
 TIME_WINDOW = 30           # за 30 секунд
 CHECK_INTERVAL = 10        # перевірка кожні 10 секунд
 MIN_PRICE = 0.001
