@@ -1,15 +1,15 @@
 import asyncio
-import json
 import time
 from datetime import datetime
-import websockets
 from telegram import Bot
+import aiohttp
 
 # ==================== НАЛАШТУВАННЯ ====================
 TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
-PUMP_THRESHOLD = 1.0      # ЗМІНЕНО: 1% замість 2%
-TIME_WINDOW = 30           # секунд для аналізу
+PUMP_THRESHOLD = 1.0      # 1% зміни
+TIME_WINDOW = 30           # за 30 секунд
+CHECK_INTERVAL = 10        # перевірка кожні 10 секунд
 MIN_PRICE = 0.001
 # =====================================================
 
@@ -31,95 +31,138 @@ async def send_alert(symbol, change, price, alert_type):
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
         print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}%")
     except Exception as e:
-        print(f"[✗] Помилка відправки: {e}")
+        print(f"[✗] Помилка: {e}")
 
-async def process_price(symbol, price):
-    global prices, alerted
+async def get_all_symbols():
+    """Отримує ВСІ ф'ючерсні USDT-монети з Bybit"""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                "https://api.bybit.com/v5/market/tickers?category=linear",
+                timeout=15
+            ) as resp:
+                data = await resp.json()
+                if data.get('retCode') == 0:
+                    symbols = [item['symbol'] for item in data['result']['list'] 
+                              if item['symbol'].endswith('USDT')]
+                    return symbols
+                else:
+                    print(f"❌ Помилка API: {data}")
+                    return []
+        except Exception as e:
+            print(f"❌ Помилка запиту: {e}")
+            return []
+
+async def get_all_prices():
+    """Отримує ціни ВСІХ монет з Bybit"""
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                "https://api.bybit.com/v5/market/tickers?category=linear",
+                timeout=15
+            ) as resp:
+                data = await resp.json()
+                if data.get('retCode') == 0:
+                    return data['result']['list']
+                else:
+                    print(f"❌ Помилка API: {data}")
+                    return []
+        except Exception as e:
+            print(f"❌ Помилка запиту: {e}")
+            return []
+
+async def check_pumps():
+    global prices, alerted, all_symbols
     
-    if not symbol or price < MIN_PRICE:
+    current_time = time.time()
+    
+    # Отримуємо всі ціни
+    tickers = await get_all_prices()
+    if not tickers:
+        print("⚠️ Не вдалося отримати ціни")
         return
     
-    if symbol not in prices:
-        prices[symbol] = []
+    # Оновлюємо список символів (якщо змінився)
+    if not all_symbols:
+        all_symbols = [item['symbol'] for item in tickers if item['symbol'].endswith('USDT')]
+        print(f"📊 ВСЬОГО МОНЕТ: {len(all_symbols)}")
     
-    prices[symbol].append((time.time(), price))
+    new_prices = {}
+    checked = 0
     
-    cutoff = time.time() - TIME_WINDOW
-    prices[symbol] = [(t, p) for t, p in prices[symbol] if t >= cutoff]
-    
-    if len(prices[symbol]) >= 2:
-        first_price = prices[symbol][0][1]
-        last_price = prices[symbol][-1][1]
-        
-        if first_price > 0:
-            change = ((last_price - first_price) / first_price) * 100
+    for item in tickers:
+        symbol = item['symbol']
+        if not symbol.endswith('USDT'):
+            continue
             
-            if abs(change) >= PUMP_THRESHOLD:
-                key = f"{symbol}_{int(prices[symbol][0][0])}"
-                if key not in alerted:
-                    alerted.add(key)
-                    print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}%")
-                    await send_alert(symbol, change, last_price, "PUMP" if change > 0 else "DUMP")
+        price = float(item['lastPrice'])
+        if price < MIN_PRICE:
+            continue
+            
+        checked += 1
+        new_prices[symbol] = price
+        
+        # Ініціалізуємо історію для нових монет
+        if symbol not in prices:
+            prices[symbol] = []
+        
+        # Додаємо поточну ціну
+        prices[symbol].append((current_time, price))
+        
+        # Видаляємо старі записи (старше TIME_WINDOW)
+        cutoff = current_time - TIME_WINDOW
+        prices[symbol] = [(t, p) for t, p in prices[symbol] if t >= cutoff]
+        
+        # Перевіряємо зміну
+        if len(prices[symbol]) >= 2:
+            first_price = prices[symbol][0][1]
+            last_price = prices[symbol][-1][1]
+            
+            if first_price > 0:
+                change = ((last_price - first_price) / first_price) * 100
+                
+                if abs(change) >= PUMP_THRESHOLD:
+                    key = f"{symbol}_{int(prices[symbol][0][0])}"
+                    if key not in alerted:
+                        alerted.add(key)
+                        print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}% (ціна: {last_price})")
+                        await send_alert(symbol, change, last_price, "PUMP" if change > 0 else "DUMP")
+    
+    print(f"✅ Перевірено {checked} монет з {len(all_symbols)}")
 
 async def main():
     global all_symbols
     
     print("=" * 50)
-    print("PUMP/DUMP MONITOR - BYBIT FUTURES")
+    print("PUMP/DUMP MONITOR - BYBIT (ВСІ МОНЕТИ)")
     print("=" * 50)
     print(f"📊 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с")
+    print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
     print("=" * 50)
+    
+    # Отримуємо список всіх монет
+    print("📡 Отримую список всіх монет...")
+    all_symbols = await get_all_symbols()
+    print(f"✅ ЗНАЙДЕНО {len(all_symbols)} ф'ючерсних USDT-монет")
     
     # Тестове повідомлення
     try:
         await bot.send_message(
             chat_id=TELEGRAM_CHAT_ID,
-            text=f"✅ *Бот запущено!*\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с",
+            text=f"✅ *Бот запущено!*\n📊 Моніторинг {len(all_symbols)} монет\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с",
             parse_mode="Markdown"
         )
         print("✅ Тестове повідомлення надіслано!")
     except Exception as e:
         print(f"⚠️ Помилка відправки: {e}")
     
-    # Отримуємо початкові ціни
-    print("📡 Отримую початкові ціни...")
-    import aiohttp
-    async with aiohttp.ClientSession() as session:
-        async with session.get("https://api.bybit.com/v5/market/tickers?category=linear") as resp:
-            data = await resp.json()
-            if data['retCode'] == 0:
-                for item in data['result']['list']:
-                    symbol = item['symbol']
-                    price = float(item['lastPrice'])
-                    if symbol.endswith('USDT') and price > MIN_PRICE:
-                        prices[symbol] = [(time.time(), price)]
-                print(f"✅ Завантажено {len(prices)} монет")
-    
-    # Bybit WebSocket
-    uri = "wss://stream.bybit.com/v5/public/linear"
-    subscription_msg = {"op": "subscribe", "args": ["tickers"]}
-    
-    print("🔄 Підключення до Bybit WebSocket...")
-    
+    # Основний цикл
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
-                await ws.send(json.dumps(subscription_msg))
-                print("✅ Підключено до Bybit! Очікую сигнали...")
-                
-                while True:
-                    try:
-                        response = json.loads(await ws.recv())
-                        if 'topic' in response and response['topic'] == 'tickers':
-                            for data in response['data']:
-                                symbol = data['symbol']
-                                price = float(data['lastPrice'])
-                                await process_price(symbol, price)
-                    except websockets.exceptions.ConnectionClosed:
-                        print("⚠️ Перепідключення...")
-                        break
+            await check_pumps()
+            await asyncio.sleep(CHECK_INTERVAL)
         except Exception as e:
-            print(f"❌ Помилка: {e}")
+            print(f"❌ Помилка в циклі: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
