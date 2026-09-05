@@ -24,27 +24,33 @@ def get_kyiv_time():
     return datetime.now(KYIV_TZ).strftime('%H:%M:%S')
 
 async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
-    emoji = "🟢" if alert_type == "PUMP" else "🔴"
-    title = "PUMP" if alert_type == "PUMP" else "DUMP"
+    # Визначаємо колір та дію
+    if alert_type == "PUMP":
+        emoji = "🟢"
+        action = "прибавила"
+        change_text = f"+{change:.2f}%"
+    else:
+        emoji = "🔴"
+        action = "упала"
+        change_text = f"{change:.2f}%"
     
+    # Форматуємо час
     if elapsed < 60:
-        time_str = f"{int(elapsed)}с"
+        time_str = f"{int(elapsed)} сек."
     else:
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
-        time_str = f"{minutes}хв {seconds}с"
+        time_str = f"{minutes} мин. {seconds} сек."
     
+    # Повідомлення як на скріншоті
     message = (
-        f"{emoji} *{title}*\n"
-        f"📊 *Монета:* `{symbol}`\n"
-        f"📈 *Зміна:* {change:+.2f}% за {time_str}\n"
-        f"💰 *Ціна:* {start_price} → {price} USDT\n"
-        f"🕐 *Час:* {get_kyiv_time()}"
+        f"{emoji} *{symbol} ({symbol.replace('USDT', '')})* {action} на *{change_text}* за последние {time_str}\n"
+        f"💰 Цена: {start_price}$ → {price}$"
     )
     
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
-        print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}% за {time_str}")
+        print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}% за {elapsed:.1f}с")
     except Exception as e:
         print(f"[✗] Помилка: {e}")
 
@@ -99,8 +105,7 @@ async def check_pumps():
                 text=f"✅ *Бот запущено на Binance!*\n"
                      f"📊 Моніторинг {len(all_symbols)} монет\n"
                      f"📈 Поріг: {PUMP_THRESHOLD}%\n"
-                     f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с\n"
-                     f"🕐 Київ: {get_kyiv_time()}",
+                     f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с",
                 parse_mode="Markdown"
             )
         except Exception as e:
@@ -181,7 +186,6 @@ async def main():
     print(f"📊 Поріг: {PUMP_THRESHOLD}%")
     print(f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с")
     print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
-    print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
     print("📡 Отримую список всіх монет Binance Futures...")
