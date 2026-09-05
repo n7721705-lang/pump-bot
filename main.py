@@ -1,9 +1,8 @@
 import asyncio
 import time
-import io
-import aiohttp
 from datetime import datetime, timezone, timedelta
 from telegram import Bot
+import aiohttp
 
 # ==================== НАЛАШТУВАННЯ ====================
 TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
@@ -24,119 +23,7 @@ all_symbols = []
 def get_kyiv_time():
     return datetime.now(KYIV_TZ).strftime('%H:%M:%S')
 
-async def get_binance_chart(symbol):
-    """
-    Отримує зображення графіка з Binance
-    Використовує публічний API Binance для генерації графіка
-    """
-    try:
-        # Binance публічний ендпоінт для графіків (klines)
-        # Отримуємо дані за останні 5 хвилин (15 свічок по 20 секунд)
-        url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval=1m&limit=15"
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                data = await resp.json()
-                if not data:
-                    return None
-                
-                # Формуємо дані для графіка
-                import matplotlib.pyplot as plt
-                import matplotlib.dates as mdates
-                import numpy as np
-                
-                # Використовуємо Agg бекенд (без GUI)
-                import matplotlib
-                matplotlib.use('Agg')
-                
-                # Парсимо дані
-                times = [datetime.fromtimestamp(int(k[0])/1000) for k in data]
-                opens = [float(k[1]) for k in data]
-                highs = [float(k[2]) for k in data]
-                lows = [float(k[3]) for k in data]
-                closes = [float(k[4]) for k in data]
-                
-                # Створюємо графік
-                fig, ax = plt.subplots(figsize=(10, 5))
-                fig.patch.set_facecolor('#1a1a2e')
-                ax.set_facecolor('#16213e')
-                
-                # Малюємо свічки
-                width = 0.6
-                for i, (t, o, h, l, c) in enumerate(zip(times, opens, highs, lows, closes)):
-                    color = '#00ff88' if c >= o else '#ff6b6b'
-                    # Тінь (high-low)
-                    ax.plot([t, t], [l, h], color=color, linewidth=1)
-                    # Тіло свічки
-                    ax.bar(t, abs(c-o), bottom=min(o,c), width=width, color=color, alpha=0.7)
-                
-                # Заголовок
-                current_price = closes[-1]
-                change = ((current_price - opens[0]) / opens[0]) * 100
-                ax.set_title(f'{symbol}  {change:+.2f}%  останні 15 хв',
-                             color='white', fontsize=14, fontweight='bold')
-                
-                # Осі
-                ax.tick_params(colors='white')
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-                ax.set_ylabel('Ціна (USDT)', color='white', fontsize=10)
-                ax.grid(True, alpha=0.2, color='white')
-                
-                plt.tight_layout()
-                
-                # Зберігаємо в буфер
-                buf = io.BytesIO()
-                plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#1a1a2e')
-                buf.seek(0)
-                plt.close()
-                
-                return buf
-                
-    except Exception as e:
-        print(f"❌ Помилка створення графіка: {e}")
-        return None
-
-async def send_alert_with_chart(symbol, change, price, alert_type, elapsed, start_price):
-    emoji = "🟢" if alert_type == "PUMP" else "🔴"
-    title = "PUMP" if alert_type == "PUMP" else "DUMP"
-    
-    if elapsed < 60:
-        time_str = f"{int(elapsed)}с"
-    else:
-        minutes = int(elapsed // 60)
-        seconds = int(elapsed % 60)
-        time_str = f"{minutes}хв {seconds}с"
-    
-    caption = (
-        f"{emoji} *{title}*\n"
-        f"📊 *Монета:* `{symbol}`\n"
-        f"📈 *Зміна:* {change:+.2f}% за {time_str}\n"
-        f"💰 *Ціна:* {start_price} → {price} USDT\n"
-        f"🕐 *Час:* {get_kyiv_time()}"
-    )
-    
-    try:
-        # Отримуємо графік з Binance
-        chart_buffer = await get_binance_chart(symbol)
-        
-        if chart_buffer:
-            await bot.send_photo(
-                chat_id=TELEGRAM_CHAT_ID,
-                photo=chart_buffer,
-                caption=caption,
-                parse_mode="Markdown"
-            )
-            print(f"[✓] СИГНАЛ З ГРАФІКОМ: {symbol} {alert_type} {change:.2f}% за {time_str}")
-        else:
-            # Якщо графік не створився — надсилаємо текст
-            await send_alert_text(symbol, change, price, alert_type, elapsed, start_price)
-            
-    except Exception as e:
-        print(f"[✗] ПОМИЛКА: {e}")
-        await send_alert_text(symbol, change, price, alert_type, elapsed, start_price)
-
-async def send_alert_text(symbol, change, price, alert_type, elapsed, start_price):
+async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
     emoji = "🟢" if alert_type == "PUMP" else "🔴"
     title = "PUMP" if alert_type == "PUMP" else "DUMP"
     
@@ -154,9 +41,10 @@ async def send_alert_text(symbol, change, price, alert_type, elapsed, start_pric
         f"💰 *Ціна:* {start_price} → {price} USDT\n"
         f"🕐 *Час:* {get_kyiv_time()}"
     )
+    
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
-        print(f"[✓] ТЕКСТОВИЙ СИГНАЛ: {symbol} {alert_type} {change:.2f}% за {time_str}")
+        print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}% за {time_str}")
     except Exception as e:
         print(f"[✗] Помилка: {e}")
 
@@ -212,7 +100,6 @@ async def check_pumps():
                      f"📊 Моніторинг {len(all_symbols)} монет\n"
                      f"📈 Поріг: {PUMP_THRESHOLD}%\n"
                      f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с\n"
-                     f"📊 Графік: свічковий (Binance API)\n"
                      f"🕐 Київ: {get_kyiv_time()}",
                 parse_mode="Markdown"
             )
@@ -255,7 +142,7 @@ async def check_pumps():
                     data['alerted'] = True
                     data['last_alert_time'] = current_time
                     print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}% за {elapsed:.1f}с")
-                    await send_alert_with_chart(
+                    await send_alert(
                         symbol, change, price,
                         "PUMP" if change > 0 else "DUMP",
                         elapsed,
@@ -294,7 +181,6 @@ async def main():
     print(f"📊 Поріг: {PUMP_THRESHOLD}%")
     print(f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с")
     print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
-    print(f"📊 Графік: свічковий (Binance API + matplotlib)")
     print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
