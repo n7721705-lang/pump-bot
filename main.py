@@ -1,6 +1,7 @@
 import asyncio
 import time
 import base64
+import json
 from datetime import datetime, timezone, timedelta
 from telegram import Bot
 import aiohttp
@@ -46,15 +47,12 @@ async def create_chart_quickchart(symbol, prices_history, start_price, current_p
                 "data": values,
                 "borderColor": color,
                 "backgroundColor": fill_color,
-                "pointRadius": 3,
-                "pointBackgroundColor": [
-                    "#00ff88" if i == 0 else "#ff6b6b" if i == len(values)-1 and change < 0 else "#00ff88" if i == len(values)-1 else color
-                    for i in range(len(values))
-                ],
+                "pointRadius": 4,
+                "pointBackgroundColor": "#00ff88" if change > 0 else "#ff6b6b",
                 "pointBorderColor": "#1a1a2e",
                 "pointBorderWidth": 2,
                 "fill": True,
-                "tension": 0.1
+                "tension": 0.2
             }]
         },
         "options": {
@@ -67,38 +65,6 @@ async def create_chart_quickchart(symbol, prices_history, start_price, current_p
                 },
                 "legend": {
                     "labels": {"color": "#ffffff", "font": {"size": 12}}
-                },
-                "annotation": {
-                    "annotations": {
-                        "startPrice": {
-                            "type": "line",
-                            "yMin": start_price,
-                            "yMax": start_price,
-                            "borderColor": "#00ff88",
-                            "borderDash": [6, 4],
-                            "label": {
-                                "content": f"Старт: {start_price:.4f}",
-                                "enabled": True,
-                                "position": "start",
-                                "color": "#00ff88",
-                                "font": {"size": 10}
-                            }
-                        },
-                        "currentPrice": {
-                            "type": "line",
-                            "yMin": current_price,
-                            "yMax": current_price,
-                            "borderColor": color,
-                            "borderDash": [6, 4],
-                            "label": {
-                                "content": f"Поточна: {current_price:.4f}",
-                                "enabled": True,
-                                "position": "end",
-                                "color": color,
-                                "font": {"size": 10}
-                            }
-                        }
-                    }
                 }
             },
             "scales": {
@@ -119,11 +85,10 @@ async def create_chart_quickchart(symbol, prices_history, start_price, current_p
     }
     
     # Кодуємо JSON для URL
-    import json
     chart_json = json.dumps(chart_config)
     chart_b64 = base64.urlsafe_b64encode(chart_json.encode()).decode()
     
-    # URL для QuickChart з білим фоном
+    # URL для QuickChart
     chart_url = f"https://quickchart.io/chart?c={chart_json}&bkg=#1a1a2e&width=600&height=400"
     
     return chart_url
@@ -164,7 +129,7 @@ async def send_alert_with_chart(symbol, change, price, alert_type, elapsed, star
         )
         print(f"[✓] СИГНАЛ З ГРАФІКОМ: {symbol} {alert_type} {change:.2f}% за {time_str}")
     except Exception as e:
-        print(f"[✗] Помилка відправки: {e}")
+        print(f"[✗] ПОМИЛКА ГРАФІКА: {e}")
         # Якщо не вийшло з графіком, надсилаємо текст
         await send_alert_text(symbol, change, price, alert_type, elapsed, start_price)
 
@@ -282,7 +247,7 @@ async def check_pumps():
         elapsed = current_time - first_time
         change = ((price - first_price) / first_price) * 100
         
-        # Додаємо в історію (не більше 30 точок для графіка)
+        # Додаємо в історію
         data['history'].append((current_time, price))
         if len(data['history']) > 30:
             data['history'] = data['history'][-30:]
