@@ -9,7 +9,7 @@ TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
 PUMP_THRESHOLD = 2.0
 MIN_PRICE = 0.001
-CHECK_INTERVAL = 10          # ЗМІНЕНО: 10 секунд
+CHECK_INTERVAL = 10
 MIN_MOVE_TIME = 10
 MAX_MOVE_TIME = 60
 # =====================================================
@@ -24,7 +24,6 @@ def get_kyiv_time():
     return datetime.now(KYIV_TZ).strftime('%H:%M:%S')
 
 async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
-    # Визначаємо колір та дію
     if alert_type == "PUMP":
         emoji = "🟢"
         action = "прибавила"
@@ -34,7 +33,6 @@ async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
         action = "упала"
         change_text = f"{change:.2f}%"
     
-    # Форматуємо час
     if elapsed < 60:
         time_str = f"{int(elapsed)} сек."
     else:
@@ -42,14 +40,11 @@ async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
         seconds = int(elapsed % 60)
         time_str = f"{minutes} мин. {seconds} сек."
     
-    # Назва монети без USDT
     coin_name = symbol.replace('USDT', '')
     
-    # Повідомлення з копіюванням (назва монети в коді)
     message = (
-        f"{emoji} *`{symbol}`* ({coin_name}) {action} на *{change_text}* за последние {time_str}\n"
-        f"💰 Цена: {start_price}$ → {price}$\n"
-        f"📋 *Нажмите на `{symbol}` чтобы скопировать*"
+        f"{emoji} *{symbol}* ({coin_name}) {action} на *{change_text}* за последние {time_str}\n"
+        f"💰 Цена: {start_price}$ → {price}$"
     )
     
     try:
