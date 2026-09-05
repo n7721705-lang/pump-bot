@@ -1,6 +1,5 @@
 import asyncio
 import time
-import base64
 import json
 from datetime import datetime, timezone, timedelta
 from telegram import Bot
@@ -26,7 +25,7 @@ def get_kyiv_time():
     return datetime.now(KYIV_TZ).strftime('%H:%M:%S')
 
 async def create_chart_quickchart(symbol, prices_history, start_price, current_price, change, elapsed):
-    """Створює графік через QuickChart API"""
+    """Створює графік через QuickChart API (простий варіант)"""
     
     # Формуємо дані для графіка
     times = [datetime.fromtimestamp(t, tz=timezone.utc).astimezone(KYIV_TZ).strftime('%H:%M:%S') 
@@ -34,8 +33,13 @@ async def create_chart_quickchart(symbol, prices_history, start_price, current_p
     values = [p for _, p in prices_history]
     
     # Кольори для PUMP/DUMP
-    color = '#00ff88' if change > 0 else '#ff6b6b'
-    fill_color = 'rgba(0, 255, 136, 0.2)' if change > 0 else 'rgba(255, 107, 107, 0.2)'
+    color = '00ff88' if change > 0 else 'ff6b6b'
+    fill_color = '00ff88' if change > 0 else 'ff6b6b'
+    
+    # Формуємо простий URL для QuickChart
+    # Беремо першу та останню ціну для відображення
+    first_price = prices_history[0][1]
+    last_price = prices_history[-1][1]
     
     # Формуємо JSON для графіка
     chart_config = {
@@ -43,15 +47,12 @@ async def create_chart_quickchart(symbol, prices_history, start_price, current_p
         "data": {
             "labels": times,
             "datasets": [{
-                "label": symbol,
+                "label": f"{symbol}",
                 "data": values,
                 "borderColor": color,
-                "backgroundColor": fill_color,
-                "pointRadius": 4,
-                "pointBackgroundColor": "#00ff88" if change > 0 else "#ff6b6b",
-                "pointBorderColor": "#1a1a2e",
-                "pointBorderWidth": 2,
+                "backgroundColor": f"{color}33",
                 "fill": True,
+                "pointRadius": 3,
                 "tension": 0.2
             }]
         },
@@ -59,37 +60,32 @@ async def create_chart_quickchart(symbol, prices_history, start_price, current_p
             "plugins": {
                 "title": {
                     "display": True,
-                    "text": f"{symbol} — {change:+.2f}% за {int(elapsed)}с",
-                    "color": "#ffffff",
-                    "font": {"size": 16, "weight": "bold"}
+                    "text": f"{symbol}  {change:+.2f}%  за {int(elapsed)}с",
+                    "color": "white",
+                    "font": {"size": 14}
                 },
                 "legend": {
-                    "labels": {"color": "#ffffff", "font": {"size": 12}}
+                    "labels": {"color": "white"}
                 }
             },
             "scales": {
                 "x": {
-                    "ticks": {"color": "#ffffff", "font": {"size": 9}},
+                    "ticks": {"color": "white", "font": {"size": 8}},
                     "grid": {"color": "rgba(255,255,255,0.1)"}
                 },
                 "y": {
-                    "ticks": {"color": "#ffffff", "font": {"size": 10}},
-                    "grid": {"color": "rgba(255,255,255,0.1)"},
-                    "position": "right"
+                    "ticks": {"color": "white", "font": {"size": 8}},
+                    "grid": {"color": "rgba(255,255,255,0.1)"}
                 }
-            },
-            "layout": {
-                "padding": {"top": 10, "bottom": 10, "left": 10, "right": 10}
             }
         }
     }
     
-    # Кодуємо JSON для URL
+    # Кодуємо JSON
     chart_json = json.dumps(chart_config)
-    chart_b64 = base64.urlsafe_b64encode(chart_json.encode()).decode()
     
-    # URL для QuickChart
-    chart_url = f"https://quickchart.io/chart?c={chart_json}&bkg=#1a1a2e&width=600&height=400"
+    # URL для QuickChart (спрощений варіант)
+    chart_url = f"https://quickchart.io/chart?c={chart_json}&bkg=1a1a2e&width=500&height=350"
     
     return chart_url
 
@@ -249,8 +245,8 @@ async def check_pumps():
         
         # Додаємо в історію
         data['history'].append((current_time, price))
-        if len(data['history']) > 30:
-            data['history'] = data['history'][-30:]
+        if len(data['history']) > 20:
+            data['history'] = data['history'][-20:]
         
         time_since_last_alert = current_time - data['last_alert_time']
         
