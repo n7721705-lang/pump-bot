@@ -8,16 +8,15 @@ import aiohttp
 TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
 PUMP_THRESHOLD = 2.0      # 2% зміни
-TIME_WINDOW = 30           # за 30 секунд
-CHECK_INTERVAL = 10        # перевірка кожні 10 секунд
 MIN_PRICE = 0.001
+CHECK_INTERVAL = 10        # перевірка кожні 10 секунд
 # =====================================================
 
 KYIV_TZ = timezone(timedelta(hours=3))
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
-prices = {}
-alerted = set()
+prices = {}          # зберігаємо {symbol: (first_price, first_time)}
+alerted = set()      # запобігаємо повторним сигналам
 all_symbols = []
 
 def get_kyiv_time():
@@ -26,16 +25,28 @@ def get_kyiv_time():
 async def send_alert(symbol, change, price, alert_type):
     emoji = "🟢" if alert_type == "PUMP" else "🔴"
     title = "PUMP" if alert_type == "PUMP" else "DUMP"
+    # Розраховуємо час, який минув від першої фіксації
+    first_time = prices.get(symbol, (None, None))[1]
+    time_diff = ""
+    if first_time:
+        seconds = int(time.time() - first_time)
+        minutes = seconds // 60
+        seconds = seconds % 60
+        if minutes > 0:
+            time_diff = f" (за {minutes}хв {seconds}с)"
+        else:
+            time_diff = f" (за {seconds}с)"
+    
     message = (
         f"{emoji} *{title}*\n"
         f"📊 *Монета:* `{symbol}`\n"
-        f"📈 *Зміна:* {change:.2f}%\n"
+        f"📈 *Зміна:* {change:.2f}%{time_diff}\n"
         f"💰 *Ціна:* {price} USDT\n"
         f"🕐 *Час:* {get_kyiv_time()}"
     )
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
-        print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}%")
+        print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}% {time_diff}")
     except Exception as e:
         print(f"[✗] Помилка: {e}")
 
@@ -43,7 +54,6 @@ async def get_all_symbols_binance():
     """Отримує ВСІ ф'ючерсні USDT-монети з Binance"""
     async with aiohttp.ClientSession() as session:
         try:
-            # Отримуємо інформацію про всі контракти
             async with session.get(
                 "https://fapi.binance.com/fapi/v1/exchangeInfo",
                 timeout=15
@@ -52,19 +62,17 @@ async def get_all_symbols_binance():
                 symbols = []
                 for item in data.get('symbols', []):
                     symbol = item.get('symbol', '')
-                    # Фільтруємо тільки USDT-пари, які торгуються
                     if symbol.endswith('USDT') and item.get('status') == 'TRADING':
                         symbols.append(symbol)
                 return symbols
         except Exception as e:
-            print(f"❌ Помилка отримання списку монет: {e}")
+            print(f"❌ Помилка: {e}")
             return []
 
 async def get_all_prices_binance():
     """Отримує ціни ВСІХ монет з Binance Futures"""
     async with aiohttp.ClientSession() as session:
         try:
-            # Отримуємо 24-годинну статистику для всіх пар
             async with session.get(
                 "https://fapi.binance.com/fapi/v1/ticker/24hr",
                 timeout=15
@@ -72,7 +80,7 @@ async def get_all_prices_binance():
                 data = await resp.json()
                 return data
         except Exception as e:
-            print(f"❌ Помилка отримання цін: {e}")
+            print(f"❌ Помилка: {e}")
             return []
 
 async def check_pumps():
@@ -91,11 +99,10 @@ async def check_pumps():
         all_symbols = [item['symbol'] for item in tickers if item['symbol'].endswith('USDT')]
         print(f"📊 ВСЬОГО МОНЕТ НА BINANCE: {len(all_symbols)}")
         
-        # Відправляємо повідомлення про запуск
         try:
             await bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
-                text=f"✅ *Бот запущено на Binance!*\n📊 Моніторинг {len(all_symbols)} монет\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с\n🕐 Київ: {get_kyiv_time()}",
+                text=f"✅ *Бот запущено на Binance!*\n📊 Моніторинг {len(all_symbols)} монет\n📈 Поріг: {PUMP_THRESHOLD}%\n🔄 Перевірка кожні {CHECK_INTERVAL}с\n🕐 Київ: {get_kyiv_time()}",
                 parse_mode="Markdown"
             )
         except Exception as e:
@@ -108,38 +115,30 @@ async def check_pumps():
         if not symbol.endswith('USDT'):
             continue
         
-        # Binance повертає ціну в полі 'lastPrice'
         price = float(item.get('lastPrice', 0))
         if price < MIN_PRICE:
             continue
         
         checked += 1
         
-        # Ініціалізуємо історію для монети
+        # Якщо монета нова — фіксуємо початкову ціну
         if symbol not in prices:
-            prices[symbol] = []
+            prices[symbol] = (price, current_time)
+            continue
         
-        # Додаємо поточну ціну
-        prices[symbol].append((current_time, price))
+        # Отримуємо початкову ціну та час
+        first_price, first_time = prices[symbol]
         
-        # Видаляємо старі записи
-        cutoff = current_time - TIME_WINDOW
-        prices[symbol] = [(t, p) for t, p in prices[symbol] if t >= cutoff]
-        
-        # Перевіряємо зміну
-        if len(prices[symbol]) >= 2:
-            first_price = prices[symbol][0][1]
-            last_price = prices[symbol][-1][1]
+        if first_price > 0:
+            change = ((price - first_price) / first_price) * 100
             
-            if first_price > 0:
-                change = ((last_price - first_price) / first_price) * 100
-                
-                if abs(change) >= PUMP_THRESHOLD:
-                    key = f"{symbol}_{int(prices[symbol][0][0])}"
-                    if key not in alerted:
-                        alerted.add(key)
-                        print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}% (ціна: {last_price})")
-                        await send_alert(symbol, change, last_price, "PUMP" if change > 0 else "DUMP")
+            # Якщо зміна ≥ порогу і ще не було сигналу
+            if abs(change) >= PUMP_THRESHOLD:
+                key = f"{symbol}_{int(first_time)}"
+                if key not in alerted:
+                    alerted.add(key)
+                    print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}% (ціна: {price})")
+                    await send_alert(symbol, change, price, "PUMP" if change > 0 else "DUMP")
     
     print(f"✅ Перевірено {checked} монет з {len(all_symbols)} | Час: {get_kyiv_time()}")
 
@@ -149,12 +148,11 @@ async def main():
     print("=" * 50)
     print("PUMP/DUMP MONITOR - BINANCE FUTURES (ВСІ МОНЕТИ)")
     print("=" * 50)
-    print(f"📊 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с")
+    print(f"📊 Поріг: {PUMP_THRESHOLD}% (без обмеження за часом)")
     print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
     print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
-    # Отримуємо список всіх монет
     print("📡 Отримую список всіх монет Binance Futures...")
     all_symbols = await get_all_symbols_binance()
     print(f"✅ ЗНАЙДЕНО {len(all_symbols)} ф'ючерсних USDT-монет")
