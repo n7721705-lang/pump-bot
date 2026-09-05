@@ -11,7 +11,6 @@ TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
 PUMP_THRESHOLD = 2.0      # 2% зміни
 TIME_WINDOW = 30           # за 30 секунд
-CHECK_INTERVAL = 5         # перевірка через WebSocket (реальний час)
 MIN_PRICE = 0.001
 # =====================================================
 
@@ -49,20 +48,27 @@ async def send_alert(symbol, change, price, alert_type):
         print(f"[✗] Помилка: {e}")
 
 async def get_all_symbols_mexc():
-    """Отримує ВСІ ф'ючерсні USDT-монети з MEXC"""
+    """Отримує ВСІ ф'ючерсні USDT-монети з MEXC (виправлений API)"""
     async with aiohttp.ClientSession() as session:
         try:
+            # MEXC Futures API - отримуємо всі контракти
             async with session.get(
                 "https://api.mexc.com/api/v1/contract/detail",
                 timeout=15
             ) as resp:
                 data = await resp.json()
+                print(f"📨 Відповідь MEXC API: {data.get('code')}")
+                
                 if data.get('code') == 200:
-                    symbols = [item['symbol'] for item in data['data'] 
-                              if item['symbol'].endswith('USDT')]
+                    symbols = []
+                    for item in data.get('data', []):
+                        symbol = item.get('symbol', '')
+                        # Фільтруємо тільки USDT-пари
+                        if symbol.endswith('USDT'):
+                            symbols.append(symbol)
                     return symbols
                 else:
-                    print(f"❌ Помилка API MEXC: {data}")
+                    print(f"❌ Помилка MEXC API: {data}")
                     return []
         except Exception as e:
             print(f"❌ Помилка запиту: {e}")
@@ -110,14 +116,37 @@ async def main():
     print("PUMP/DUMP MONITOR - MEXC FUTURES (ВСІ МОНЕТИ)")
     print("=" * 50)
     print(f"📊 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с")
-    print(f"🔄 WebSocket (реальний час)")
+    print("🔄 WebSocket (реальний час)")
     print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
     # Отримуємо список всіх монет
     print("📡 Отримую список всіх монет MEXC...")
     all_symbols = await get_all_symbols_mexc()
+    
+    if not all_symbols:
+        print("❌ НЕ ВДАЛОСЯ ОТРИМАТИ СПИСОК МОНЕТ!")
+        print("🔄 Спробую альтернативний метод...")
+        
+        # Альтернативний метод - через tickers API
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.mexc.com/api/v1/contract/ticker",
+                    timeout=15
+                ) as resp:
+                    data = await resp.json()
+                    if data.get('code') == 200:
+                        all_symbols = [item['symbol'] for item in data.get('data', []) 
+                                      if item['symbol'].endswith('USDT')]
+        except Exception as e:
+            print(f"❌ Альтернативний метод також не спрацював: {e}")
+    
     print(f"✅ ЗНАЙДЕНО {len(all_symbols)} ф'ючерсних USDT-монет")
+    
+    if not all_symbols:
+        print("❌ Немає монет для моніторингу. Перевірте API MEXC.")
+        return
     
     # Тестове повідомлення
     try:
@@ -133,14 +162,10 @@ async def main():
     # MEXC WebSocket
     uri = "wss://contract.mexc.com/edge"
     
-    # Формуємо список символів для підписки (всі монети)
-    # MEXC вимагає підписку на кожну монету окремо через метод SUBSCRIPTION
-    # Але простіше використовувати канал tickers:всі символи
+    # Підписка на tickers (всі монети)
     subscription_msg = {
         "method": "SUBSCRIPTION",
-        "params": [
-            f"tickers"  # Підписка на всі тікери
-        ],
+        "params": ["tickers"],
         "id": 1
     }
     
@@ -149,14 +174,14 @@ async def main():
     while True:
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
-                # Відправляємо підписку
                 await ws.send(json.dumps(subscription_msg))
-                print(f"✅ Підключено до MEXC! Отримую дані з {len(all_symbols)} монет...")
+                print("✅ Підписку відправлено!")
                 
-                # Отримуємо підтвердження підписки
+                # Читаємо підтвердження
                 response = await ws.recv()
-                print(f"📨 Відповідь MEXC: {response}")
+                print(f"📨 Відповідь: {response}")
                 
+                print(f"✅ Підключено до MEXC! Отримую дані з {len(all_symbols)} монет...")
                 print("⏳ Очікую сигнали...")
                 
                 while True:
@@ -164,31 +189,24 @@ async def main():
                         response = await ws.recv()
                         data = json.loads(response)
                         
-                        # Перевіряємо, чи це дані про ціни
-                        if 'channel' in data and data['channel'] == 'tickers':
-                            if 'data' in data and data['data']:
-                                # MEXC повертає або один об'єкт, або масив
-                                tickers = data['data']
-                                if not isinstance(tickers, list):
-                                    tickers = [tickers]
-                                
-                                for ticker in tickers:
-                                    symbol = ticker.get('symbol')
-                                    price = float(ticker.get('lastPrice', 0))
-                                    await process_price(symbol, price)
-                        
-                        # Періодично виводимо кількість монет у пам'яті
-                        if len(prices) > 0 and int(time.time()) % 30 == 0:
-                            print(f"📊 Відстежується {len(prices)} монет")
+                        if data.get('channel') == 'tickers':
+                            tickers = data.get('data', [])
+                            if not isinstance(tickers, list):
+                                tickers = [tickers]
                             
+                            for ticker in tickers:
+                                symbol = ticker.get('symbol')
+                                price = float(ticker.get('lastPrice', 0))
+                                if symbol and price > 0:
+                                    await process_price(symbol, price)
+                                    
                     except websockets.exceptions.ConnectionClosed:
                         print("⚠️ З'єднання втрачено, перепідключення...")
                         break
-                    except json.JSONDecodeError as e:
-                        print(f"⚠️ Помилка JSON: {e}")
+                    except json.JSONDecodeError:
                         continue
         except Exception as e:
-            print(f"❌ Помилка WebSocket: {e}")
+            print(f"❌ Помилка: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
