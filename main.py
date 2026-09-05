@@ -9,7 +9,7 @@ TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
 PUMP_THRESHOLD = 2.0
 MIN_PRICE = 0.001
-CHECK_INTERVAL = 5
+CHECK_INTERVAL = 10          # ЗМІНЕНО: 10 секунд
 MIN_MOVE_TIME = 10
 MAX_MOVE_TIME = 60
 # =====================================================
@@ -42,10 +42,14 @@ async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
         seconds = int(elapsed % 60)
         time_str = f"{minutes} мин. {seconds} сек."
     
-    # Повідомлення як на скріншоті
+    # Назва монети без USDT
+    coin_name = symbol.replace('USDT', '')
+    
+    # Повідомлення з копіюванням (назва монети в коді)
     message = (
-        f"{emoji} *{symbol} ({symbol.replace('USDT', '')})* {action} на *{change_text}* за последние {time_str}\n"
-        f"💰 Цена: {start_price}$ → {price}$"
+        f"{emoji} *`{symbol}`* ({coin_name}) {action} на *{change_text}* за последние {time_str}\n"
+        f"💰 Цена: {start_price}$ → {price}$\n"
+        f"📋 *Нажмите на `{symbol}` чтобы скопировать*"
     )
     
     try:
@@ -105,7 +109,8 @@ async def check_pumps():
                 text=f"✅ *Бот запущено на Binance!*\n"
                      f"📊 Моніторинг {len(all_symbols)} монет\n"
                      f"📈 Поріг: {PUMP_THRESHOLD}%\n"
-                     f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с",
+                     f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с\n"
+                     f"🔄 Перевірка кожні {CHECK_INTERVAL}с",
                 parse_mode="Markdown"
             )
         except Exception as e:
