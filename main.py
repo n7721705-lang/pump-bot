@@ -5,8 +5,8 @@ from telegram import Bot
 import aiohttp
 
 # ==================== НАЛАШТУВАННЯ ====================
-TELEGRAM_BOT_TOKEN = "8818473462:AAG02pUpdJn0FsBzJabEVdOW7-UrFmMbx4w"
-TELEGRAM_CHAT_ID = -1003933274705
+TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
+TELEGRAM_CHAT_ID = -1004438401967
 
 PUMP_THRESHOLD = 2.0             # Мінімальний рух (%)
 MIN_MOVE_TIME = 1                # Мінімальний час руху (сек)
@@ -106,10 +106,6 @@ async def check_pumps():
         
         time_since_last_alert = current_time - data['last_alert_time']
         
-        # Перевіряємо умови для сигналу
-        # 1. Зміна ≥ порогу
-        # 2. Час руху від 1 до 20 секунд
-        # 3. Ще не було сигналу для цього руху
         if abs(change) >= PUMP_THRESHOLD and not data['alerted']:
             if MIN_MOVE_TIME <= elapsed <= MAX_MOVE_TIME:
                 if time_since_last_alert >= 5:
@@ -123,7 +119,6 @@ async def check_pumps():
                         first_price
                     )
         
-        # Скидаємо якщо минуло більше MAX_MOVE_TIME або зміна стала маленькою
         if elapsed > MAX_MOVE_TIME or abs(change) < 0.3:
             if elapsed > MAX_MOVE_TIME:
                 prices[symbol] = {
