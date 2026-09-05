@@ -1,5 +1,7 @@
 import asyncio
 import time
+import json
+import base64
 from datetime import datetime, timezone, timedelta
 from telegram import Bot
 import aiohttp
@@ -23,16 +25,82 @@ all_symbols = []
 def get_kyiv_time():
     return datetime.now(KYIV_TZ).strftime('%H:%M:%S')
 
-def create_text_chart(symbol, change, elapsed, start_price, current_price):
-    """Створює простий текстовий графік"""
+async def create_chart_image(symbol, prices_history, start_price, current_price, change, elapsed):
+    """Створює графік через QuickChart API"""
     
-    # Визначаємо напрямок
-    is_pump = change > 0
-    arrow = "📈" if is_pump else "📉"
-    emoji = "🟢" if is_pump else "🔴"
-    title = "PUMP" if is_pump else "DUMP"
+    # Дані для графіка
+    times = [datetime.fromtimestamp(t, tz=timezone.utc).astimezone(KYIV_TZ).strftime('%H:%M:%S') 
+             for t, _ in prices_history]
+    values = [p for _, p in prices_history]
     
-    # Форматуємо час
+    # Кольори
+    color = '#00ff88' if change > 0 else '#ff6b6b'
+    fill_color = 'rgba(0,255,136,0.2)' if change > 0 else 'rgba(255,107,107,0.2)'
+    
+    # Базовий URL для QuickChart
+    base_url = "https://quickchart.io/chart"
+    
+    # Параметри графіка
+    params = {
+        "type": "line",
+        "data": {
+            "labels": times,
+            "datasets": [{
+                "label": symbol,
+                "data": values,
+                "borderColor": color,
+                "backgroundColor": fill_color,
+                "pointRadius": 5,
+                "pointBackgroundColor": color,
+                "pointBorderColor": "#1a1a2e",
+                "pointBorderWidth": 2,
+                "fill": True,
+                "tension": 0.2,
+                "borderWidth": 3
+            }]
+        },
+        "options": {
+            "plugins": {
+                "title": {
+                    "display": True,
+                    "text": f"{symbol}  {change:+.2f}%  за {int(elapsed)}с",
+                    "color": "#ffffff",
+                    "font": {"size": 18, "weight": "bold"}
+                },
+                "legend": {
+                    "labels": {
+                        "color": "#ffffff",
+                        "font": {"size": 12}
+                    }
+                }
+            },
+            "scales": {
+                "x": {
+                    "ticks": {"color": "#ffffff", "font": {"size": 10}},
+                    "grid": {"color": "rgba(255,255,255,0.1)"}
+                },
+                "y": {
+                    "ticks": {"color": "#ffffff", "font": {"size": 10}},
+                    "grid": {"color": "rgba(255,255,255,0.1)"},
+                    "position": "right"
+                }
+            },
+            "layout": {
+                "padding": {"top": 20, "bottom": 20, "left": 20, "right": 20}
+            }
+        }
+    }
+    
+    # Кодуємо в JSON та URL
+    chart_json = json.dumps(params)
+    chart_url = f"{base_url}?c={chart_json}&bkg=#1a1a2e&width=700&height=400"
+    
+    return chart_url
+
+async def send_alert_with_chart(symbol, change, price, alert_type, elapsed, start_price, prices_history):
+    emoji = "🟢" if alert_type == "PUMP" else "🔴"
+    title = "PUMP" if alert_type == "PUMP" else "DUMP"
+    
     if elapsed < 60:
         time_str = f"{int(elapsed)}с"
     else:
@@ -40,48 +108,40 @@ def create_text_chart(symbol, change, elapsed, start_price, current_price):
         seconds = int(elapsed % 60)
         time_str = f"{minutes}хв {seconds}с"
     
-    # Створюємо текстовий графік
-    # Визначаємо масштаб для стрілки
-    abs_change = abs(change)
-    if abs_change >= 10:
-        bar_length = 20
-    elif abs_change >= 5:
-        bar_length = 15
-    elif abs_change >= 3:
-        bar_length = 10
-    else:
-        bar_length = int(abs_change * 4) + 2
-    
-    # Створюємо стрілку
-    if is_pump:
-        bar = "█" * bar_length
-    else:
-        bar = "█" * bar_length
-    
-    # Формуємо повідомлення
-    message = (
+    # Текст під графіком
+    caption = (
         f"{emoji} *{title}*\n"
         f"📊 *Монета:* `{symbol}`\n"
-        f"{arrow} *Зміна:* {change:+.2f}% за {time_str}\n"
-        f"💰 *Ціна:* {start_price} → {current_price} USDT\n"
-        f"📊 *Графік:*\n"
-        f"```\n"
-        f"{bar} {change:+.2f}%\n"
-        f"```\n"
+        f"📈 *Зміна:* {change:+.2f}% за {time_str}\n"
+        f"💰 *Ціна:* {start_price} → {price} USDT\n"
         f"🕐 *Час:* {get_kyiv_time()}"
     )
     
-    return message
+    try:
+        # Отримуємо URL графіка
+        chart_url = await create_chart_image(
+            symbol, prices_history, start_price, price, change, elapsed
+        )
+        
+        # Надсилаємо фото
+        await bot.send_photo(
+            chat_id=TELEGRAM_CHAT_ID,
+            photo=chart_url,
+            caption=caption,
+            parse_mode="Markdown"
+        )
+        print(f"[✓] СИГНАЛ З ГРАФІКОМ: {symbol} {alert_type} {change:.2f}% за {time_str}")
+        
+    except Exception as e:
+        print(f"[✗] ПОМИЛКА ГРАФІКА: {e}")
+        # Резервний варіант - тільки текст
+        await send_alert_text(symbol, change, price, alert_type, elapsed, start_price)
 
-async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
-    """Надсилає сигнал з текстовим графіком"""
+async def send_alert_text(symbol, change, price, alert_type, elapsed, start_price):
+    """Надсилає тільки текст (резерв)"""
+    emoji = "🟢" if alert_type == "PUMP" else "🔴"
+    title = "PUMP" if alert_type == "PUMP" else "DUMP"
     
-    # Визначаємо тип
-    is_pump = change > 0
-    emoji = "🟢" if is_pump else "🔴"
-    title = "PUMP" if is_pump else "DUMP"
-    
-    # Форматуємо час
     if elapsed < 60:
         time_str = f"{int(elapsed)}с"
     else:
@@ -89,33 +149,17 @@ async def send_alert(symbol, change, price, alert_type, elapsed, start_price):
         seconds = int(elapsed % 60)
         time_str = f"{minutes}хв {seconds}с"
     
-    # Визначаємо довжину графіка
-    abs_change = abs(change)
-    if abs_change >= 10:
-        bar_length = 20
-    elif abs_change >= 5:
-        bar_length = 15
-    else:
-        bar_length = int(abs_change * 5) + 2
-    
-    # Стрілка
-    arrow = "🟢" if is_pump else "🔴"
-    bar = "█" * bar_length
-    
-    # Повідомлення
     message = (
         f"{emoji} *{title}*\n"
         f"📊 *Монета:* `{symbol}`\n"
         f"📈 *Зміна:* {change:+.2f}% за {time_str}\n"
         f"💰 *Ціна:* {start_price} → {price} USDT\n"
-        f"📊 *Графік:*\n"
-        f"`{bar} {change:+.2f}%`\n"
-        f"🕐 *Час:* {get_kyiv_time()}"
+        f"🕐 *Час:* {get_kyiv_time()}\n"
+        f"⚠️ *Графік не завантажився*"
     )
-    
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode="Markdown")
-        print(f"[✓] СИГНАЛ: {symbol} {alert_type} {change:.2f}% за {time_str}")
+        print(f"[✓] ТЕКСТОВИЙ СИГНАЛ: {symbol} {alert_type} {change:.2f}% за {time_str}")
     except Exception as e:
         print(f"[✗] Помилка: {e}")
 
@@ -171,7 +215,7 @@ async def check_pumps():
                      f"📊 Моніторинг {len(all_symbols)} монет\n"
                      f"📈 Поріг: {PUMP_THRESHOLD}%\n"
                      f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с\n"
-                     f"📊 Графік: текстовий\n"
+                     f"📊 Графік: QuickChart\n"
                      f"🕐 Київ: {get_kyiv_time()}",
                 parse_mode="Markdown"
             )
@@ -196,7 +240,8 @@ async def check_pumps():
                 'first_price': price,
                 'first_time': current_time,
                 'alerted': False,
-                'last_alert_time': 0
+                'last_alert_time': 0,
+                'history': [(current_time, price)]
             }
             continue
         
@@ -206,6 +251,11 @@ async def check_pumps():
         elapsed = current_time - first_time
         change = ((price - first_price) / first_price) * 100
         
+        # Додаємо в історію
+        data['history'].append((current_time, price))
+        if len(data['history']) > 20:
+            data['history'] = data['history'][-20:]
+        
         time_since_last_alert = current_time - data['last_alert_time']
         
         if abs(change) >= PUMP_THRESHOLD and not data['alerted']:
@@ -214,11 +264,12 @@ async def check_pumps():
                     data['alerted'] = True
                     data['last_alert_time'] = current_time
                     print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}% за {elapsed:.1f}с")
-                    await send_alert(
+                    await send_alert_with_chart(
                         symbol, change, price,
                         "PUMP" if change > 0 else "DUMP",
                         elapsed,
-                        first_price
+                        first_price,
+                        data['history']
                     )
             elif elapsed < MIN_MOVE_TIME:
                 pass
@@ -227,7 +278,8 @@ async def check_pumps():
                     'first_price': price,
                     'first_time': current_time,
                     'alerted': False,
-                    'last_alert_time': data['last_alert_time']
+                    'last_alert_time': data['last_alert_time'],
+                    'history': [(current_time, price)]
                 }
                 print(f"🔄 Скидання {symbol}: час {elapsed:.1f}с > {MAX_MOVE_TIME}с")
         
@@ -237,7 +289,8 @@ async def check_pumps():
                     'first_price': price,
                     'first_time': current_time,
                     'alerted': False,
-                    'last_alert_time': data['last_alert_time']
+                    'last_alert_time': data['last_alert_time'],
+                    'history': [(current_time, price)]
                 }
                 print(f"🔄 Скидання {symbol}: новий рух від {price}")
     
@@ -248,12 +301,12 @@ async def main():
     global all_symbols
     
     print("=" * 50)
-    print("PUMP/DUMP MONITOR - BINANCE FUTURES")
+    print("PUMP/DUMP MONITOR - BINANCE FUTURES (З ФОТО ГРАФІКОМ)")
     print("=" * 50)
     print(f"📊 Поріг: {PUMP_THRESHOLD}%")
     print(f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с")
     print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
-    print(f"📊 Графік: текстовий")
+    print(f"📊 Графік: QuickChart (фото)")
     print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
