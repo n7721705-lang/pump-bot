@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone, timedelta
 from telegram import Bot
 import aiohttp
+import urllib.parse
 
 # ==================== НАЛАШТУВАННЯ ====================
 TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
@@ -24,68 +25,39 @@ all_symbols = []
 def get_kyiv_time():
     return datetime.now(KYIV_TZ).strftime('%H:%M:%S')
 
-async def create_chart_quickchart(symbol, prices_history, start_price, current_price, change, elapsed):
-    """Створює графік через QuickChart API (простий варіант)"""
+async def create_chart_google(symbol, prices_history, start_price, current_price, change, elapsed):
+    """Створює простий графік через Google Charts API"""
     
-    # Формуємо дані для графіка
-    times = [datetime.fromtimestamp(t, tz=timezone.utc).astimezone(KYIV_TZ).strftime('%H:%M:%S') 
-             for t, _ in prices_history]
     values = [p for _, p in prices_history]
     
-    # Кольори для PUMP/DUMP
-    color = '00ff88' if change > 0 else 'ff6b6b'
-    fill_color = '00ff88' if change > 0 else 'ff6b6b'
+    # Формуємо дані для графіка
+    min_val = min(values)
+    max_val = max(values)
+    range_val = max_val - min_val if max_val != min_val else 1
     
-    # Формуємо простий URL для QuickChart
-    # Беремо першу та останню ціну для відображення
-    first_price = prices_history[0][1]
-    last_price = prices_history[-1][1]
+    # Створюємо лінійний графік
+    # Формат: chd=t:val1,val2,val3...
+    data_str = ",".join([f"{v:.6f}" for v in values])
     
-    # Формуємо JSON для графіка
-    chart_config = {
-        "type": "line",
-        "data": {
-            "labels": times,
-            "datasets": [{
-                "label": f"{symbol}",
-                "data": values,
-                "borderColor": color,
-                "backgroundColor": f"{color}33",
-                "fill": True,
-                "pointRadius": 3,
-                "tension": 0.2
-            }]
-        },
-        "options": {
-            "plugins": {
-                "title": {
-                    "display": True,
-                    "text": f"{symbol}  {change:+.2f}%  за {int(elapsed)}с",
-                    "color": "white",
-                    "font": {"size": 14}
-                },
-                "legend": {
-                    "labels": {"color": "white"}
-                }
-            },
-            "scales": {
-                "x": {
-                    "ticks": {"color": "white", "font": {"size": 8}},
-                    "grid": {"color": "rgba(255,255,255,0.1)"}
-                },
-                "y": {
-                    "ticks": {"color": "white", "font": {"size": 8}},
-                    "grid": {"color": "rgba(255,255,255,0.1)"}
-                }
-            }
-        }
-    }
+    # Кольори: зелений для PUMP, червоний для DUMP
+    color = "00ff88" if change > 0 else "ff6b6b"
     
-    # Кодуємо JSON
-    chart_json = json.dumps(chart_config)
-    
-    # URL для QuickChart (спрощений варіант)
-    chart_url = f"https://quickchart.io/chart?c={chart_json}&bkg=1a1a2e&width=500&height=350"
+    # URL для графіка
+    chart_url = (
+        f"https://chart.googleapis.com/chart?"
+        f"cht=lc&"  # Лінійний графік
+        f"chs=600x300&"  # Розмір
+        f"chd=t:{data_str}&"  # Дані
+        f"chco={color}&"  # Колір лінії
+        f"chls=2&"  # Товщина лінії
+        f"chxt=x,y&"  # Осі
+        f"chxr=1,{min_val:.6f},{max_val:.6f}&"  # Діапазон Y
+        f"chtt={symbol}+{change:+.2f}%+за+{int(elapsed)}с&"  # Заголовок
+        f"chts=ffffff,14&"  # Колір заголовка
+        f"chxs=0,ffffff,10|1,ffffff,10&"  # Колір підписів осей
+        f"chg=0,20,1,5&"  # Сітка
+        f"chf=bg,s,1a1a2e"  # Фон
+    )
     
     return chart_url
 
@@ -100,7 +72,6 @@ async def send_alert_with_chart(symbol, change, price, alert_type, elapsed, star
         seconds = int(elapsed % 60)
         time_str = f"{minutes}хв {seconds}с"
     
-    # Текст повідомлення
     caption = (
         f"{emoji} *{title}*\n"
         f"📊 *Монета:* `{symbol}`\n"
@@ -111,8 +82,8 @@ async def send_alert_with_chart(symbol, change, price, alert_type, elapsed, star
     )
     
     try:
-        # Створюємо графік
-        chart_url = await create_chart_quickchart(
+        # Створюємо графік через Google Charts
+        chart_url = await create_chart_google(
             symbol, prices_history, start_price, price, change, elapsed
         )
         
@@ -207,7 +178,7 @@ async def check_pumps():
                      f"📊 Моніторинг {len(all_symbols)} монет\n"
                      f"📈 Поріг: {PUMP_THRESHOLD}%\n"
                      f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с\n"
-                     f"📊 Графік: QuickChart\n"
+                     f"📊 Графік: Google Charts\n"
                      f"🕐 Київ: {get_kyiv_time()}",
                 parse_mode="Markdown"
             )
@@ -243,10 +214,10 @@ async def check_pumps():
         elapsed = current_time - first_time
         change = ((price - first_price) / first_price) * 100
         
-        # Додаємо в історію
+        # Додаємо в історію (не більше 15 точок для Google Charts)
         data['history'].append((current_time, price))
-        if len(data['history']) > 20:
-            data['history'] = data['history'][-20:]
+        if len(data['history']) > 15:
+            data['history'] = data['history'][-15:]
         
         time_since_last_alert = current_time - data['last_alert_time']
         
@@ -286,7 +257,9 @@ async def check_pumps():
                 }
                 print(f"🔄 Скидання {symbol}: новий рух від {price}")
     
-    print(f"✅ Перевірено {checked} монет з {len(all_symbols)} | Час: {get_kyiv_time()}")
+    # Виводимо перевірку рідше (кожні 10 ітерацій)
+    if int(current_time / 10) % 10 == 0:
+        print(f"✅ Перевірено {checked} монет з {len(all_symbols)} | Час: {get_kyiv_time()}")
 
 async def main():
     global all_symbols
@@ -297,7 +270,7 @@ async def main():
     print(f"📊 Поріг: {PUMP_THRESHOLD}%")
     print(f"⏱ Час руху: {MIN_MOVE_TIME}–{MAX_MOVE_TIME}с")
     print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
-    print(f"📊 Графік: QuickChart API")
+    print(f"📊 Графік: Google Charts API")
     print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
