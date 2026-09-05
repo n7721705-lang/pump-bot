@@ -1,16 +1,15 @@
 import asyncio
 import time
-import json
 from datetime import datetime, timezone, timedelta
 from telegram import Bot
 import aiohttp
-import websockets
 
 # ==================== НАЛАШТУВАННЯ ====================
 TELEGRAM_BOT_TOKEN = "8686768235:AAEphYxwBp36WM8kkhgjm4akOhtrkJNp_vw"
 TELEGRAM_CHAT_ID = -1004438401967
 PUMP_THRESHOLD = 2.0      # 2% зміни
 TIME_WINDOW = 30           # за 30 секунд
+CHECK_INTERVAL = 10        # перевірка кожні 10 секунд
 MIN_PRICE = 0.001
 # =====================================================
 
@@ -40,133 +39,133 @@ async def send_alert(symbol, change, price, alert_type):
     except Exception as e:
         print(f"[✗] Помилка: {e}")
 
-async def get_all_symbols_mexc():
-    """Отримує ВСІ ф'ючерсні USDT-монети з MEXC через правильний API"""
+async def get_all_symbols_binance():
+    """Отримує ВСІ ф'ючерсні USDT-монети з Binance"""
     async with aiohttp.ClientSession() as session:
         try:
-            # ВИПРАВЛЕНО: правильна URL для MEXC Futures
-            url = "https://futures.mexc.com/api/v1/contract/detail?type=all"
-            print(f"📡 Запит до: {url}")
-            
-            async with session.get(url, timeout=15) as resp:
+            # Отримуємо інформацію про всі контракти
+            async with session.get(
+                "https://fapi.binance.com/fapi/v1/exchangeInfo",
+                timeout=15
+            ) as resp:
                 data = await resp.json()
-                print(f"📨 Код відповіді: {data.get('code')}")
-                
-                if data.get('code') == 200:
-                    symbols = []
-                    for item in data.get('data', []):
-                        symbol = item.get('symbol', '')
-                        if symbol.endswith('USDT'):
-                            symbols.append(symbol)
-                    return symbols
-                else:
-                    print(f"❌ Помилка: {data}")
-                    return []
+                symbols = []
+                for item in data.get('symbols', []):
+                    symbol = item.get('symbol', '')
+                    # Фільтруємо тільки USDT-пари, які торгуються
+                    if symbol.endswith('USDT') and item.get('status') == 'TRADING':
+                        symbols.append(symbol)
+                return symbols
         except Exception as e:
-            print(f"❌ Помилка запиту: {e}")
+            print(f"❌ Помилка отримання списку монет: {e}")
             return []
 
-async def process_price(symbol, price):
-    global prices, alerted
-    if not symbol or price < MIN_PRICE:
-        return
+async def get_all_prices_binance():
+    """Отримує ціни ВСІХ монет з Binance Futures"""
+    async with aiohttp.ClientSession() as session:
+        try:
+            # Отримуємо 24-годинну статистику для всіх пар
+            async with session.get(
+                "https://fapi.binance.com/fapi/v1/ticker/24hr",
+                timeout=15
+            ) as resp:
+                data = await resp.json()
+                return data
+        except Exception as e:
+            print(f"❌ Помилка отримання цін: {e}")
+            return []
+
+async def check_pumps():
+    global prices, alerted, all_symbols
+    
     current_time = time.time()
-    if symbol not in prices:
-        prices[symbol] = []
-    prices[symbol].append((current_time, price))
-    cutoff = current_time - TIME_WINDOW
-    prices[symbol] = [(t, p) for t, p in prices[symbol] if t >= cutoff]
-    if len(prices[symbol]) >= 2:
-        first_price = prices[symbol][0][1]
-        last_price = prices[symbol][-1][1]
-        if first_price > 0:
-            change = ((last_price - first_price) / first_price) * 100
-            if abs(change) >= PUMP_THRESHOLD:
-                key = f"{symbol}_{int(prices[symbol][0][0])}"
-                if key not in alerted:
-                    alerted.add(key)
-                    print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}%")
-                    await send_alert(symbol, change, last_price, "PUMP" if change > 0 else "DUMP")
+    
+    # Отримуємо всі ціни
+    tickers = await get_all_prices_binance()
+    if not tickers:
+        print("⚠️ Не вдалося отримати ціни")
+        return
+    
+    # Оновлюємо список монет (якщо ще не отримали)
+    if not all_symbols:
+        all_symbols = [item['symbol'] for item in tickers if item['symbol'].endswith('USDT')]
+        print(f"📊 ВСЬОГО МОНЕТ НА BINANCE: {len(all_symbols)}")
+        
+        # Відправляємо повідомлення про запуск
+        try:
+            await bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=f"✅ *Бот запущено на Binance!*\n📊 Моніторинг {len(all_symbols)} монет\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с\n🕐 Київ: {get_kyiv_time()}",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            print(f"⚠️ Помилка відправки: {e}")
+    
+    checked = 0
+    
+    for item in tickers:
+        symbol = item.get('symbol', '')
+        if not symbol.endswith('USDT'):
+            continue
+        
+        # Binance повертає ціну в полі 'lastPrice'
+        price = float(item.get('lastPrice', 0))
+        if price < MIN_PRICE:
+            continue
+        
+        checked += 1
+        
+        # Ініціалізуємо історію для монети
+        if symbol not in prices:
+            prices[symbol] = []
+        
+        # Додаємо поточну ціну
+        prices[symbol].append((current_time, price))
+        
+        # Видаляємо старі записи
+        cutoff = current_time - TIME_WINDOW
+        prices[symbol] = [(t, p) for t, p in prices[symbol] if t >= cutoff]
+        
+        # Перевіряємо зміну
+        if len(prices[symbol]) >= 2:
+            first_price = prices[symbol][0][1]
+            last_price = prices[symbol][-1][1]
+            
+            if first_price > 0:
+                change = ((last_price - first_price) / first_price) * 100
+                
+                if abs(change) >= PUMP_THRESHOLD:
+                    key = f"{symbol}_{int(prices[symbol][0][0])}"
+                    if key not in alerted:
+                        alerted.add(key)
+                        print(f"🔥 ЗНАЙДЕНО! {symbol} зміна {change:.2f}% (ціна: {last_price})")
+                        await send_alert(symbol, change, last_price, "PUMP" if change > 0 else "DUMP")
+    
+    print(f"✅ Перевірено {checked} монет з {len(all_symbols)} | Час: {get_kyiv_time()}")
 
 async def main():
     global all_symbols
     
     print("=" * 50)
-    print("PUMP/DUMP MONITOR - MEXC FUTURES (ВСІ МОНЕТИ)")
+    print("PUMP/DUMP MONITOR - BINANCE FUTURES (ВСІ МОНЕТИ)")
     print("=" * 50)
     print(f"📊 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с")
-    print("🔄 WebSocket + REST API")
+    print(f"🔄 Перевірка кожні {CHECK_INTERVAL}с")
     print(f"🕐 Часовий пояс: Київ")
     print("=" * 50)
     
-    print("📡 Отримую список всіх монет MEXC...")
-    all_symbols = await get_all_symbols_mexc()
-    
-    if not all_symbols:
-        print("❌ НЕ ВДАЛОСЯ ОТРИМАТИ СПИСОК МОНЕТ!")
-        print("🔄 Перевіряємо альтернативний ендпоінт...")
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://contract.mexc.com/api/v1/contract/detail",
-                    timeout=15
-                ) as resp:
-                    data = await resp.json()
-                    if data.get('code') == 200:
-                        all_symbols = [item['symbol'] for item in data.get('data', []) 
-                                      if item['symbol'].endswith('USDT')]
-        except Exception as e:
-            print(f"❌ Альтернатива не спрацювала: {e}")
-    
+    # Отримуємо список всіх монет
+    print("📡 Отримую список всіх монет Binance Futures...")
+    all_symbols = await get_all_symbols_binance()
     print(f"✅ ЗНАЙДЕНО {len(all_symbols)} ф'ючерсних USDT-монет")
     
-    if not all_symbols:
-        print("❌ Немає монет для моніторингу.")
-        return
-    
-    try:
-        await bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=f"✅ *Бот запущено!*\n📊 Моніторинг {len(all_symbols)} монет (MEXC)\n📈 Поріг: {PUMP_THRESHOLD}% за {TIME_WINDOW}с\n🕐 Київ: {get_kyiv_time()}",
-            parse_mode="Markdown"
-        )
-        print("✅ Тестове повідомлення надіслано!")
-    except Exception as e:
-        print(f"⚠️ Помилка відправки: {e}")
-    
-    # MEXC WebSocket
-    uri = "wss://contract.mexc.com/edge"
-    subscription_msg = {"method": "SUBSCRIPTION", "params": ["tickers"], "id": 1}
-    
-    print("🔄 Підключення до WebSocket MEXC...")
-    
+    # Основний цикл
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
-                await ws.send(json.dumps(subscription_msg))
-                response = await ws.recv()
-                print(f"📨 Відповідь WebSocket: {response[:200]}...")
-                print(f"✅ Підключено! Отримую дані з {len(all_symbols)} монет...")
-                
-                while True:
-                    try:
-                        response = await ws.recv()
-                        data = json.loads(response)
-                        if data.get('channel') == 'tickers':
-                            tickers = data.get('data', [])
-                            if not isinstance(tickers, list):
-                                tickers = [tickers]
-                            for ticker in tickers:
-                                symbol = ticker.get('symbol')
-                                price = float(ticker.get('lastPrice', 0))
-                                if symbol and price > 0:
-                                    await process_price(symbol, price)
-                    except websockets.exceptions.ConnectionClosed:
-                        print("⚠️ З'єднання втрачено, перепідключення...")
-                        break
+            await check_pumps()
+            await asyncio.sleep(CHECK_INTERVAL)
         except Exception as e:
-            print(f"❌ Помилка WebSocket: {e}")
+            print(f"❌ Помилка в циклі: {e}")
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
